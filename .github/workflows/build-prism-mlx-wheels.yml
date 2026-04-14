@@ -52,10 +52,11 @@ jobs:
         working-directory: prism-mlx
         shell: bash
         env:
-          DEVELOPER_DIR: /Applications/Xcode-latest.app
           MACOSX_DEPLOYMENT_TARGET: ${{ inputs.deployment_target }}
         run: |
           set -euo pipefail
+          xcode-select -p
+          xcodebuild -version
           python -m pip install --upgrade pip build setuptools
 
           python setup.py clean --all
