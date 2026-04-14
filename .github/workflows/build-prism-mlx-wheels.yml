@@ -21,7 +21,7 @@ on:
       runner_label:
         description: "GitHub Actions runner label. Use an arm64 macOS runner."
         required: true
-        default: "macos-15-xlarge"
+        default: "macos-15"
         type: string
 
 permissions:
@@ -54,15 +54,18 @@ jobs:
         env:
           DEVELOPER_DIR: /Applications/Xcode-latest.app
           MACOSX_DEPLOYMENT_TARGET: ${{ inputs.deployment_target }}
+          ARCHFLAGS: -arch arm64
+          _PYTHON_HOST_PLATFORM: macosx-${{ inputs.deployment_target }}-arm64
         run: |
           set -euo pipefail
-          python -m pip install --upgrade pip build
+          plat_name="macosx_$(echo "$MACOSX_DEPLOYMENT_TARGET" | tr '.' '_')_arm64"
+          python -m pip install --upgrade pip wheel
 
           python setup.py clean --all
-          MLX_BUILD_STAGE=1 python -m build -w
+          MLX_BUILD_STAGE=1 python setup.py bdist_wheel --plat-name "$plat_name"
 
           python setup.py clean --all
-          MLX_BUILD_STAGE=2 python -m build -w
+          MLX_BUILD_STAGE=2 python setup.py bdist_wheel --plat-name "$plat_name"
 
       - name: Verify wheel tags and metallib payload
         id: verify
