@@ -76,7 +76,7 @@ jobs:
           set -euo pipefail
 
           expected_cp_tag="cp$(echo "$EXPECTED_PYTHON" | tr -d '.')"
-          expected_platform_tag="macosx_$(echo "$EXPECTED_TARGET" | tr '.' '_')_arm64"
+          expected_platform_prefix="macosx_$(echo "$EXPECTED_TARGET" | tr '.' '_')"
 
           echo "Runner platform:"
           python -c "import platform; print(platform.mac_ver(), platform.machine())"
@@ -85,8 +85,18 @@ jobs:
           ls -1 dist/
           echo
 
-          core_wheel="$(ls dist/mlx-*-"${expected_cp_tag}"-"${expected_cp_tag}"-"${expected_platform_tag}".whl)"
-          metal_wheel="$(ls dist/mlx_metal-*-"${expected_cp_tag}"-none-"${expected_platform_tag}".whl)"
+          core_wheel="$(find dist -maxdepth 1 -type f \
+            \( -name "mlx-*-${expected_cp_tag}-${expected_cp_tag}-${expected_platform_prefix}_arm64.whl" \
+            -o -name "mlx-*-${expected_cp_tag}-${expected_cp_tag}-${expected_platform_prefix}_universal2.whl" \) \
+            | sort | head -1)"
+
+          metal_wheel="$(find dist -maxdepth 1 -type f \
+            \( -name "mlx_metal-*-py3-none-${expected_platform_prefix}_arm64.whl" \
+            -o -name "mlx_metal-*-py3-none-${expected_platform_prefix}_universal2.whl" \) \
+            | sort | head -1)"
+
+          test -n "$core_wheel"
+          test -n "$metal_wheel"
 
           echo "core_wheel=$core_wheel" >> "$GITHUB_OUTPUT"
           echo "metal_wheel=$metal_wheel" >> "$GITHUB_OUTPUT"
