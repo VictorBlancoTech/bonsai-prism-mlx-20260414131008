@@ -1,0 +1,147 @@
+name: Build Prism MLX Wheels
+
+on:
+  workflow_dispatch:
+    inputs:
+      prism_ref:
+        description: "Branch, tag, or commit of PrismML-Eng/mlx to build"
+        required: true
+        default: "72ec298f48b11099b58d917ee7413196d0fe9ef4"
+        type: string
+      python_version:
+        description: "CPython minor version for the wheel ABI"
+        required: true
+        default: "3.11"
+        type: string
+      deployment_target:
+        description: "MACOSX_DEPLOYMENT_TARGET for the wheel tags"
+        required: true
+        default: "15.0"
+        type: string
+      runner_label:
+        description: "GitHub Actions runner label. Use an arm64 macOS runner."
+        required: true
+        default: "macos-15-xlarge"
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build mlx + mlx-metal wheels
+    runs-on: ${{ inputs.runner_label }}
+
+    steps:
+      - name: Checkout current repository
+        uses: actions/checkout@v4
+
+      - name: Checkout Prism MLX fork
+        uses: actions/checkout@v4
+        with:
+          repository: PrismML-Eng/mlx
+          ref: ${{ inputs.prism_ref }}
+          path: prism-mlx
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ inputs.python_version }}
+
+      - name: Build stage 1 and stage 2 wheels
+        working-directory: prism-mlx
+        shell: bash
+        env:
+          DEVELOPER_DIR: /Applications/Xcode-latest.app
+          MACOSX_DEPLOYMENT_TARGET: ${{ inputs.deployment_target }}
+        run: |
+          set -euo pipefail
+          python -m pip install --upgrade pip build
+
+          python setup.py clean --all
+          MLX_BUILD_STAGE=1 python -m build -w
+
+          python setup.py clean --all
+          MLX_BUILD_STAGE=2 python -m build -w
+
+      - name: Verify wheel tags and metallib payload
+        id: verify
+        working-directory: prism-mlx
+        shell: bash
+        env:
+          EXPECTED_PYTHON: ${{ inputs.python_version }}
+          EXPECTED_TARGET: ${{ inputs.deployment_target }}
+        run: |
+          set -euo pipefail
+
+          expected_cp_tag="cp$(echo "$EXPECTED_PYTHON" | tr -d '.')"
+          expected_platform_tag="macosx_$(echo "$EXPECTED_TARGET" | tr '.' '_')_arm64"
+
+          echo "Runner platform:"
+          python -c "import platform; print(platform.mac_ver(), platform.machine())"
+          echo
+          echo "Built files:"
+          ls -1 dist/
+          echo
+
+          core_wheel="$(ls dist/mlx-*-"${expected_cp_tag}"-"${expected_cp_tag}"-"${expected_platform_tag}".whl)"
+          metal_wheel="$(ls dist/mlx_metal-*-"${expected_cp_tag}"-none-"${expected_platform_tag}".whl)"
+
+          echo "core_wheel=$core_wheel" >> "$GITHUB_OUTPUT"
+          echo "metal_wheel=$metal_wheel" >> "$GITHUB_OUTPUT"
+
+          unzip -l "$metal_wheel" | grep 'mlx\.metallib'
+
+      - name: Bundle artifacts and install notes
+        working-directory: prism-mlx
+        shell: bash
+        env:
+          PRISM_REF: ${{ inputs.prism_ref }}
+          PYTHON_VERSION: ${{ inputs.python_version }}
+          DEPLOYMENT_TARGET: ${{ inputs.deployment_target }}
+        run: |
+          set -euo pipefail
+
+          mkdir -p artifact
+          cp "${{ steps.verify.outputs.core_wheel }}" artifact/
+          cp "${{ steps.verify.outputs.metal_wheel }}" artifact/
+          git rev-parse HEAD > artifact/PRISM_MLX_COMMIT.txt
+
+          cat > artifact/BUILD_INFO.txt <<EOF
+          prism_ref: ${PRISM_REF}
+          resolved_commit: $(git rev-parse HEAD)
+          python_version: ${PYTHON_VERSION}
+          deployment_target: ${DEPLOYMENT_TARGET}
+          core_wheel: $(basename "${{ steps.verify.outputs.core_wheel }}")
+          metal_wheel: $(basename "${{ steps.verify.outputs.metal_wheel }}")
+          EOF
+
+          cat > artifact/INSTALL_ON_MAC_MINI.txt <<'EOF'
+          Copy both wheels to ~/bonsai-mlx/wheels/ on the Mac mini, then run:
+
+          cd ~/bonsai-mlx/Bonsai-demo
+          uv pip list --python .venv/bin/python | grep '^mlx' || true
+          uv pip uninstall --python .venv/bin/python -y mlx mlx-metal
+          uv pip install --python .venv/bin/python --no-deps \
+            ~/bonsai-mlx/wheels/mlx-*.whl \
+            ~/bonsai-mlx/wheels/mlx_metal-*.whl
+
+          .venv/bin/python - <<'PY'
+          import mlx.core as mx
+          w = mx.array([[0.1, 0.9], [0.7, 0.2]], dtype=mx.float32)
+          q, s, b = mx.quantize(w, group_size=2, bits=1)
+          w2 = mx.dequantize(q, s, b, 2, 1)
+          print("device:", mx.default_device())
+          print("1-bit quantization ok:", q.shape, w2.shape)
+          PY
+
+          ./scripts/run_mlx.sh -p "Di solo OK"
+          EOF
+
+      - name: Upload wheel artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: prism-mlx-wheels-cp${{ inputs.python_version }}-macos-${{ inputs.deployment_target }}
+          path: prism-mlx/artifact/
+          if-no-files-found: error
+          retention-days: 14
